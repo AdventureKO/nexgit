@@ -1,0 +1,58 @@
+name: Bug report
+description: Report a reproducible problem in this project.
+title: '[bug] '
+labels:
+  - 'kind: bug'
+  - 'status: needs-triage'
+body:
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched open and closed issues and pull requests and did not find a duplicate.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Pick the closest part of the project so automation can route triage correctly.
+      options:
+        - Automation
+        - CLI
+        - Core
+        - Desktop
+        - Design
+        - Docs
+        - Protocol
+        - Tests
+        - TUI
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the bug and the behavior you expected.
+      placeholder: The project should...
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction
+      description: List the minimal steps to reproduce the issue.
+      placeholder: |
+        1. Open ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, runtime, browser, package manager, or version details that matter.
+      placeholder: macOS 15, Node 22, pnpm 10
+    validations:
+      required: true

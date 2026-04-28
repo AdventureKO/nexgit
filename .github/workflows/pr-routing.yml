@@ -1,0 +1,134 @@
+name: PR Routing
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  route-reviewers:
+    if: ${{ github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Request a reviewer from the maintainer rotation
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pullRequest = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+
+            if (pullRequest.draft) {
+              core.info("Pull request is still a draft; reviewer routing is deferred.");
+              return;
+            }
+
+            function parseMaintainerConfig(raw) {
+              const config = {
+                triage_assignees: [],
+                pr_reviewers: [],
+              };
+              let currentKey = null;
+
+              for (const originalLine of raw.split(/\r?\n/)) {
+                const line = originalLine.replace(/\s+#.*$/, "");
+                if (!line.trim()) {
+                  continue;
+                }
+
+                const sectionMatch = line.match(/^([a-z_]+):\s*$/);
+                if (sectionMatch) {
+                  currentKey = sectionMatch[1];
+                  if (!(currentKey in config)) {
+                    throw new Error(`Unsupported key in .github/maintainers.yml: ${currentKey}`);
+                  }
+                  continue;
+                }
+
+                const itemMatch = line.match(/^\s*-\s*["']?@?([A-Za-z0-9_-]+)["']?\s*$/);
+                if (itemMatch && currentKey) {
+                  config[currentKey].push(itemMatch[1]);
+                  continue;
+                }
+
+                throw new Error(`Unsupported line in .github/maintainers.yml: ${originalLine}`);
+              }
+
+              if (!config.pr_reviewers.length) {
+                throw new Error(".github/maintainers.yml must define at least one PR reviewer.");
+              }
+
+              for (const [key, values] of Object.entries(config)) {
+                if (values.some((value) => value.toUpperCase().includes("REPLACE"))) {
+                  throw new Error(`Replace placeholder values in .github/maintainers.yml for ${key} before using template automation.`);
+                }
+              }
+
+              return config;
+            }
+
+            async function loadMaintainerConfig() {
+              const response = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path: ".github/maintainers.yml",
+              });
+
+              if (Array.isArray(response.data) || !response.data.content) {
+                throw new Error(".github/maintainers.yml must be a file in the repository root.");
+              }
+
+              const decoded = Buffer.from(response.data.content, "base64").toString("utf8");
+              return parseMaintainerConfig(decoded);
+            }
+
+            function pickReviewer(list, seed, authorLogin) {
+              const unique = [...new Set(list)];
+              if (!unique.length) {
+                return null;
+              }
+
+              const normalizedAuthor = (authorLogin || "").toLowerCase();
+              const startIndex = seed % unique.length;
+
+              for (let offset = 0; offset < unique.length; offset += 1) {
+                const candidate = unique[(startIndex + offset) % unique.length];
+                if (candidate.toLowerCase() !== normalizedAuthor) {
+                  return candidate;
+                }
+              }
+
+              return null;
+            }
+
+            const config = await loadMaintainerConfig();
+            const { data: requested } = await github.rest.pulls.listRequestedReviewers({
+              owner,
+              repo,
+              pull_number: pullRequest.number,
+            });
+
+            const requestedHumanReviewers = (requested.users || []).filter((user) => user.type !== "Bot");
+            if (requestedHumanReviewers.length > 0) {
+              core.info("A human reviewer is already requested; leaving reviewer routing unchanged.");
+              return;
+            }
+
+            const reviewer = pickReviewer(config.pr_reviewers, pullRequest.number, pullRequest.user.login);
+            if (!reviewer) {
+              core.info("No eligible reviewer found after skipping the pull request author.");
+              return;
+            }
+
+            await github.rest.pulls.requestReviewers({
+              owner,
+              repo,
+              pull_number: pullRequest.number,
+              reviewers: [reviewer],
+            });

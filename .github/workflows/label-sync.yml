@@ -1,0 +1,55 @@
+name: Label Sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/labels.json'
+      - '.github/workflows/label-sync.yml'
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const fs = require("fs");
+            const labels = JSON.parse(fs.readFileSync(".github/labels.json", "utf8"));
+            const existing = await github.paginate(github.rest.issues.listLabelsForRepo, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+
+            const existingMap = new Map(existing.map((label) => [label.name, label]));
+
+            for (const label of labels) {
+              const current = existingMap.get(label.name);
+              if (current) {
+                await github.rest.issues.updateLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  name: current.name,
+                  new_name: label.name,
+                  color: label.color,
+                  description: label.description,
+                });
+                continue;
+              }
+
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label.name,
+                color: label.color,
+                description: label.description,
+              });
+            }

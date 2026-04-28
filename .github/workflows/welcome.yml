@@ -1,0 +1,101 @@
+name: Welcome
+
+on:
+  issues:
+    types:
+      - opened
+  pull_request_target:
+    types:
+      - opened
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  first-issue:
+    if: ${{ github.event_name == 'issues' && github.event.issue.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome first-time issue reporters
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue = context.payload.issue;
+            const defaultBranch = context.payload.repository.default_branch;
+            const login = issue.user.login;
+            const searchQuery = `repo:${owner}/${repo} is:issue author:${login}`;
+
+            const result = await github.graphql(
+              `
+                query FirstIssueCount($searchQuery: String!) {
+                  search(query: $searchQuery, type: ISSUE, first: 1) {
+                    issueCount
+                  }
+                }
+              `,
+              { searchQuery },
+            );
+
+            if (result.search.issueCount !== 1) {
+              core.info("Reporter has opened issues here before; skipping welcome comment.");
+              return;
+            }
+
+            const contributingUrl = `https://github.com/${owner}/${repo}/blob/${defaultBranch}/CONTRIBUTING.md`;
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: issue.number,
+              body: [
+                `Thanks for opening your first issue in this repository, @${login}.`,
+                "",
+                `A maintainer will triage it shortly. In the meantime, please keep the issue form accurate and add any missing reproduction or context details. The contribution workflow is documented in [CONTRIBUTING.md](${contributingUrl}).`,
+              ].join("\n"),
+            });
+
+  first-pr:
+    if: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome first-time pull request authors
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullRequest = context.payload.pull_request;
+            const defaultBranch = context.payload.repository.default_branch;
+            const login = pullRequest.user.login;
+            const searchQuery = `repo:${owner}/${repo} is:pr author:${login}`;
+
+            const result = await github.graphql(
+              `
+                query FirstPullRequestCount($searchQuery: String!) {
+                  search(query: $searchQuery, type: ISSUE, first: 1) {
+                    issueCount
+                  }
+                }
+              `,
+              { searchQuery },
+            );
+
+            if (result.search.issueCount !== 1) {
+              core.info("Author has opened pull requests here before; skipping welcome comment.");
+              return;
+            }
+
+            const contributingUrl = `https://github.com/${owner}/${repo}/blob/${defaultBranch}/CONTRIBUTING.md`;
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: pullRequest.number,
+              body: [
+                `Thanks for opening your first pull request in this repository, @${login}.`,
+                "",
+                `Before review starts, make sure the PR checklist is complete and the fastest relevant local checks have been run. The expected workflow is documented in [CONTRIBUTING.md](${contributingUrl}).`,
+              ].join("\n"),
+            });

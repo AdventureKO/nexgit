@@ -1,0 +1,246 @@
+name: PR Hygiene
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  title-and-checklist:
+    if: ${{ github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR intake standards
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pullRequest = context.payload.pull_request;
+            const title = pullRequest.title;
+            const body = pullRequest.body || "";
+            const marker = "<!-- codelab-template-pr-intake -->";
+            const titlePattern = /^(feat|fix|docs|chore|refactor|test|build|ci|perf|revert)(\([^)]+\))?: .+/;
+            const checklistPatterns = [
+              /- \[[xX]\] I ran the relevant local checks\./,
+              /- \[[xX]\] I updated documentation or confirmed no docs changes were needed\./,
+              /- \[[xX]\] I linked related issues or pull requests and confirmed this is not duplicate work\./,
+              /- \[[xX]\] This change stays within the stated scope of the PR\./,
+              /- \[[xX]\] I wrote this change myself and did not use AI or agent tools to create commits, open the pull request, or generate substantial code\/docs for this PR\./
+            ];
+            const aiAuthorshipPatterns = [
+              /\b(?:ai-generated|ai generated|agent-generated|agent generated)\b/i,
+              /\b(?:generated|created|written|authored|implemented|made)\s+(?:by|with|using)\s+(?:ai|chatgpt|codex|claude|copilot|cursor|windsurf|opencode)\b/i,
+              /\b(?:co-authored-by|signed-off-by):.*\b(?:chatgpt|codex|claude|openai|anthropic|cursor|windsurf|opencode)\b/i,
+              /\b(?:chatgpt|codex|claude|copilot|cursor|windsurf|opencode)\s+(?:generated|created|wrote|authored|implemented|made)\b/i,
+            ];
+            const stopWords = new Set([
+              "about", "after", "before", "because", "feature", "issue", "pull",
+              "request", "project", "task", "there", "their", "would", "could",
+              "should", "today", "workflow", "report", "problem", "proposal",
+              "summary", "environment", "this", "that", "with", "from",
+            ]);
+            const findings = [];
+
+            function normalizeWhitespace(value) {
+              return value.replace(/\s+/g, " ").trim();
+            }
+
+            function tokenize(value) {
+              return [...new Set(
+                (value.toLowerCase().match(/[a-z0-9]{4,}/g) || [])
+                  .filter((token) => !stopWords.has(token))
+              )];
+            }
+
+            async function ensureLabel(name, present) {
+              if (present) {
+                await github.rest.issues.addLabels({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pullRequest.number,
+                  labels: [name],
+                });
+                return;
+              }
+
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pullRequest.number,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
+            function extractLinkedContext() {
+              const match = body.match(/## Linked context\s*\n([\s\S]*?)(?=\n## |$)/i);
+              return match ? match[1].trim() : "";
+            }
+
+            function scoreCandidate(seedTokens, candidate) {
+              const candidateTokens = tokenize(`${candidate.title} ${candidate.body || ""}`);
+              const overlap = seedTokens.filter((token) => candidateTokens.includes(token));
+              const normalizedSeedTitle = normalizeWhitespace(title.toLowerCase());
+              const normalizedCandidateTitle = normalizeWhitespace(candidate.title.toLowerCase());
+              const exactishTitle = normalizedSeedTitle.includes(normalizedCandidateTitle) || normalizedCandidateTitle.includes(normalizedSeedTitle);
+              return overlap.length + (exactishTitle ? 3 : 0);
+            }
+
+            function containsAiAuthorshipMarker(value) {
+              return aiAuthorshipPatterns.some((pattern) => pattern.test(value));
+            }
+
+            if (!titlePattern.test(title)) {
+              findings.push("PR titles must follow Conventional Commit style, for example `feat: add project overview`.");
+            }
+
+            for (const pattern of checklistPatterns) {
+              if (!pattern.test(body)) {
+                findings.push("Pull requests must complete every checklist item in the template.");
+                break;
+              }
+            }
+
+            const linkedContext = extractLinkedContext();
+            const hasLinkedContext = /(closes|fixes|resolves|related to|refs|supersedes)\s+#\d+/i.test(linkedContext)
+              || /^n\/a\b/i.test(linkedContext)
+              || /\bdocs only\b/i.test(linkedContext);
+
+            if (!hasLinkedContext) {
+              findings.push("Add linked context such as `Closes #123`, `Related to #123`, or `Supersedes #123` in the PR template.");
+            }
+
+            let hasAiAuthorshipMarker = containsAiAuthorshipMarker(`${title}\n${body}`);
+            try {
+              const { data: commits } = await github.rest.pulls.listCommits({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: pullRequest.number,
+                per_page: 100,
+              });
+              hasAiAuthorshipMarker = hasAiAuthorshipMarker || commits.some((commit) => containsAiAuthorshipMarker(commit.commit.message || ""));
+            } catch (error) {
+              core.warning(`Could not inspect pull request commits for authorship markers: ${error.message}`);
+            }
+
+            if (hasAiAuthorshipMarker) {
+              findings.push("This pull request contains explicit AI or agent authorship markers and needs maintainer authenticity review before it can proceed.");
+            }
+
+            const seedTokens = tokenize(title).slice(0, 6);
+            let duplicateCandidates = [];
+
+            if (seedTokens.length >= 2) {
+              const searchQuery = `repo:${context.repo.owner}/${context.repo.repo} is:pr ${seedTokens.map((token) => `"${token}"`).join(" ")}`;
+              try {
+                const result = await github.graphql(
+                  `
+                    query SearchPullRequests($searchQuery: String!) {
+                      search(query: $searchQuery, type: ISSUE, first: 10) {
+                        nodes {
+                          ... on PullRequest {
+                            number
+                            title
+                            state
+                            url
+                            body
+                          }
+                        }
+                      }
+                    }
+                  `,
+                  { searchQuery },
+                );
+
+                duplicateCandidates = result.search.nodes
+                  .filter((candidate) => candidate.number !== pullRequest.number)
+                  .map((candidate) => ({ ...candidate, score: scoreCandidate(seedTokens, candidate) }))
+                  .filter((candidate) => candidate.score >= 3)
+                  .sort((left, right) => right.score - left.score)
+                  .slice(0, 3);
+              } catch (error) {
+                core.warning(`Could not search for duplicate pull requests: ${error.message}`);
+              }
+            }
+
+            const sections = [];
+            if (findings.length > 0) {
+              sections.push([
+                "This pull request needs a small update before review:",
+                findings.map((finding) => `- ${finding}`).join("\n"),
+              ].join("\n\n"));
+            }
+
+            if (duplicateCandidates.length > 0) {
+              sections.push([
+                "Potentially related open or recent pull requests:",
+                duplicateCandidates
+                  .map((candidate) => `- #${candidate.number} ${candidate.title} (${candidate.state.toLowerCase()})`)
+                  .join("\n"),
+                "If one of these replaces this PR, a maintainer can close this with `/superseded-by #123`; otherwise a maintainer can clear the review with `/not-duplicate`.",
+              ].join("\n\n"));
+            }
+
+            const commentBody = sections.length > 0 ? `${marker}\n\n${sections.join("\n\n---\n\n")}` : null;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pullRequest.number,
+            });
+            const existing = comments.find((comment) => comment.user.type === "Bot" && comment.body.includes(marker));
+
+            if (commentBody) {
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: existing.id,
+                  body: commentBody,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: pullRequest.number,
+                  body: commentBody,
+                });
+              }
+            } else if (existing) {
+              await github.rest.issues.deleteComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+              });
+            }
+
+            await ensureLabel("needs: title", findings.some((finding) => finding.startsWith("PR titles must")));
+            await ensureLabel("needs: compliance", findings.some((finding) => finding.startsWith("Pull requests must complete")));
+            await ensureLabel("needs: linked-context", findings.some((finding) => finding.startsWith("Add linked context")));
+            await ensureLabel("needs: authenticity-review", hasAiAuthorshipMarker);
+            await ensureLabel("needs: duplicate-review", duplicateCandidates.length > 0);
+
+            if (findings.length > 0) {
+              core.setFailed(findings.join(" "));
+            }
+
+  labeler:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/labeler@v6
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
