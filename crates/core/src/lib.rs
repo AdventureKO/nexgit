@@ -1,8 +1,10 @@
 pub mod error;
+pub mod github;
 pub mod repo;
 pub mod stack;
 
 pub use error::{CoreError, Result};
+pub use github::{resolve_github_repo, GitHubRepo};
 pub use repo::RepoStatus;
 pub use stack::StackSummary;
 
