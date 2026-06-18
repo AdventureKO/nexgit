@@ -35,6 +35,23 @@ async fn handle_request(
             },
             Err(error) => ServerMessage::failure(id, "stack_list_failed", error.to_string()),
         },
+        "github.auth.status" => match state.core().github_auth_status() {
+            Ok(auth_status) => match serde_json::to_value(auth_status) {
+                Ok(value) => ServerMessage::success(id, value),
+                Err(error) => ServerMessage::failure(id, "serialization_error", error.to_string()),
+            },
+            Err(error) => ServerMessage::failure(id, "auth_status_failed", error.to_string()),
+        },
+        "github.repo.current" => match state.core().github_repo_current() {
+            Ok(repo) => {
+                let repo_json = serde_json::json!({
+                    "owner": repo.owner,
+                    "repo": repo.repo,
+                });
+                ServerMessage::success(id, repo_json)
+            }
+            Err(error) => ServerMessage::failure(id, "repo_current_failed", error.to_string()),
+        },
         _ => ServerMessage::failure(
             id,
             "method_not_found",
