@@ -1,0 +1,152 @@
+[
+  {
+    "name": "area: automation",
+    "color": "0E8A16",
+    "description": "GitHub workflows, templates, labels, and repository automation."
+  },
+  {
+    "name": "area: cli",
+    "color": "5319E7",
+    "description": "Headless commands, CLI entrypoints, and app-server process wiring."
+  },
+  {
+    "name": "area: core",
+    "color": "1D76DB",
+    "description": "Shared Rust product logic and domain behavior."
+  },
+  {
+    "name": "area: desktop",
+    "color": "C2E0C6",
+    "description": "Electron, React, TypeScript, and desktop UX."
+  },
+  {
+    "name": "area: design",
+    "color": "D876E3",
+    "description": "UX, visual design, copy, screenshots, and design contribution workflow."
+  },
+  {
+    "name": "area: docs",
+    "color": "0052CC",
+    "description": "Project documentation and contributor guidance."
+  },
+  {
+    "name": "area: protocol",
+    "color": "BFD4F2",
+    "description": "App-server protocol types, schemas, and client/server message contracts."
+  },
+  {
+    "name": "area: tests",
+    "color": "BFD4F2",
+    "description": "Automated tests and test infrastructure."
+  },
+  {
+    "name": "area: tui",
+    "color": "F9D0C4",
+    "description": "Terminal UI layout, input handling, and Ratatui behavior."
+  },
+  {
+    "name": "kind: bug",
+    "color": "D73A4A",
+    "description": "A defect or regression."
+  },
+  {
+    "name": "kind: docs",
+    "color": "0366D6",
+    "description": "Documentation-only changes or issues."
+  },
+  {
+    "name": "kind: feature",
+    "color": "A2EEEF",
+    "description": "A user-facing capability request."
+  },
+  {
+    "name": "kind: maintenance",
+    "color": "FBCA04",
+    "description": "Repository maintenance or infrastructure work."
+  },
+  {
+    "name": "needs: compliance",
+    "color": "B60205",
+    "description": "The author or reporter needs to fix template or policy gaps."
+  },
+  {
+    "name": "needs: authenticity-review",
+    "color": "B60205",
+    "description": "A pull request needs maintainer review for explicit AI or agent authorship markers."
+  },
+  {
+    "name": "needs: duplicate-review",
+    "color": "FBCA04",
+    "description": "Automation found similar existing work that needs maintainer review."
+  },
+  {
+    "name": "needs: design",
+    "color": "D4C5F9",
+    "description": "Needs UX, visual design, copy, or accessibility input before implementation."
+  },
+  {
+    "name": "needs: linked-context",
+    "color": "5319E7",
+    "description": "A pull request needs a linked issue or related pull request."
+  },
+  {
+    "name": "needs: title",
+    "color": "D73A4A",
+    "description": "A pull request title does not meet the repository title standard."
+  },
+  {
+    "name": "good first issue",
+    "color": "7057FF",
+    "description": "A scoped task that is suitable for a first contribution."
+  },
+  {
+    "name": "good for beginner",
+    "color": "7057FF",
+    "description": "A student-friendly starter task with clear scope, success criteria, and verification steps."
+  },
+  {
+    "name": "good first design issue",
+    "color": "C5DEF5",
+    "description": "A scoped design, UX, copy, or documentation task suitable for a first contribution."
+  },
+  {
+    "name": "help wanted",
+    "color": "008672",
+    "description": "Maintainers would welcome a community contribution on this work."
+  },
+  {
+    "name": "maintainer only",
+    "color": "5319E7",
+    "description": "Repository administration or governance work reserved for maintainers."
+  },
+  {
+    "name": "status: needs-triage",
+    "color": "EDEDED",
+    "description": "Awaiting maintainer triage."
+  },
+  {
+    "name": "status: needs-author-feedback",
+    "color": "D4C5F9",
+    "description": "Waiting on the author or reporter to provide more information."
+  },
+  {
+    "name": "status: in-progress",
+    "color": "0E8A16",
+    "description": "Someone has claimed or started work on this issue or pull request."
+  },
+  {
+    "name": "status: duplicate",
+    "color": "BFDADC",
+    "description": "Closed in favor of an existing canonical issue or pull request."
+  },
+  {
+    "name": "status: superseded",
+    "color": "C5DEF5",
+    "description": "Closed because a newer pull request replaced it."
+  },
+  {
+    "name": "status: stale",
+    "color": "FBCA04",
+    "description": "Automatically marked stale due to inactivity."
+  }
+]

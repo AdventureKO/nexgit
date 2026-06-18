@@ -1,0 +1,28 @@
+{
+  "name": "nexgit",
+  "private": true,
+  "license": "MIT OR Apache-2.0",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "app-server": "cargo run -p nexgit-cli -- app-server --listen stdio://",
+    "check": "pnpm format:check && cargo check --workspace && pnpm lint && pnpm typecheck",
+    "desktop:build": "pnpm --filter @nexgit/desktop build",
+    "desktop:dev": "pnpm --filter @nexgit/desktop dev",
+    "desktop:typecheck": "pnpm --filter @nexgit/desktop typecheck",
+    "format": "cargo fmt --all && pnpm format:prettier",
+    "format:check": "cargo fmt --all --check && pnpm format:prettier:check",
+    "format:prettier": "prettier --write .",
+    "format:prettier:check": "prettier --check .",
+    "lint": "pnpm lint:rust && pnpm lint:desktop",
+    "lint:desktop": "pnpm --filter @nexgit/desktop lint",
+    "lint:rust": "cargo clippy --workspace --all-targets -- -D warnings",
+    "nix:check": "nix flake check --no-build",
+    "nix:fmt": "nix fmt -- flake.nix",
+    "nix:fmt:check": "nix fmt -- --check flake.nix",
+    "tui": "cargo run -p nexgit-cli -- tui",
+    "typecheck": "pnpm desktop:typecheck"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.2"
+  }
+}

@@ -1,0 +1,60 @@
+'area: automation':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/**/*'
+
+'area: docs':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.md'
+          - 'docs/**/*'
+
+'area: cli':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'apps/cli/Cargo.toml'
+          - 'apps/cli/src/*.rs'
+          - 'apps/cli/src/commands/**/*'
+          - 'apps/cli/src/server/**/*'
+
+'area: core':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/core/**/*'
+
+'area: desktop':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'apps/desktop/**/*'
+
+'area: design':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'design/**/*'
+          - 'docs/design/**/*'
+          - 'assets/design/**/*'
+
+'area: protocol':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'crates/protocol/**/*'
+          - 'apps/desktop/src/shared/protocol.ts'
+
+'area: tui':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'apps/cli/src/tui/**/*'
+
+'area: tests':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'test/**/*'
+          - 'tests/**/*'
+          - '**/*.test.*'
+          - '**/*.spec.*'
+
+'kind: docs':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.md'
+          - 'docs/**/*'

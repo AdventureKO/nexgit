@@ -1,0 +1,310 @@
+name: Triage Commands
+
+on:
+  issue_comment:
+    types:
+      - created
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage:
+    if: ${{ startsWith(github.event.comment.body, '/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply maintainer triage commands
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const body = (context.payload.comment.body || "").trim();
+            const association = context.payload.comment.author_association || "NONE";
+            const allowedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+            const isMaintainer = allowedAssociations.has(association);
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue = context.payload.issue;
+            const issueNumber = issue.number;
+            const isPullRequest = Boolean(issue.pull_request);
+            const commenter = context.payload.comment.user.login;
+            const issueLabels = (issue.labels || []).map((label) => typeof label === "string" ? label : label.name);
+            const isMaintainerOnly = issueLabels.some((label) => label.toLowerCase() === "maintainer only");
+
+            async function addLabels(labels) {
+              if (!labels.length) {
+                return;
+              }
+
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                labels,
+              });
+            }
+
+            async function removeLabel(name) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
+            async function removeLabels(labels) {
+              for (const label of labels) {
+                await removeLabel(label);
+              }
+            }
+
+            async function tryAssignUser(login) {
+              try {
+                await github.rest.issues.addAssignees({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  assignees: [login],
+                });
+              } catch (error) {
+                if (error.status !== 422) {
+                  throw error;
+                }
+
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body: `GitHub could not assign @${login}. A maintainer may need to assign this manually.`,
+                });
+                return false;
+              }
+
+              await addLabels(["status: in-progress"]);
+              await removeLabels([
+                "help wanted",
+                "status: needs-author-feedback",
+                "status: needs-triage",
+                "status: stale",
+              ]);
+              return true;
+            }
+
+            async function unassignUser(login) {
+              await github.rest.issues.removeAssignees({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                assignees: [login],
+              });
+
+              const remainingAssignees = (issue.assignees || [])
+                .map((assignee) => assignee.login.toLowerCase())
+                .filter((assignee) => assignee !== login.toLowerCase());
+
+              if (remainingAssignees.length === 0) {
+                await addLabels(["status: needs-triage"]);
+                await removeLabel("status: in-progress");
+              }
+            }
+
+            async function closeCurrent() {
+              await github.rest.issues.update({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                state: "closed",
+              });
+            }
+
+            async function ensureTargetExists(targetNumber) {
+              try {
+                await github.rest.issues.get({
+                  owner,
+                  repo,
+                  issue_number: targetNumber,
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  core.setFailed(`Referenced item #${targetNumber} does not exist.`);
+                  return false;
+                }
+
+                throw error;
+              }
+
+              return true;
+            }
+
+            const assignMatch = body.match(/^\/assign(?:\s+@?([A-Za-z0-9][A-Za-z0-9-]{0,38}))?\s*$/i);
+            if (assignMatch) {
+              const assignee = assignMatch[1] || commenter;
+              if (!isMaintainer && isMaintainerOnly) {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  body: "This issue is marked `maintainer only`, so a maintainer needs to assign it.",
+                });
+                return;
+              }
+
+              if (!isMaintainer && assignee.toLowerCase() !== commenter.toLowerCase()) {
+                core.info(`Ignoring cross-user /assign from ${association}.`);
+                return;
+              }
+
+              await tryAssignUser(assignee);
+              return;
+            }
+
+            const unassignMatch = body.match(/^\/unassign(?:\s+@?([A-Za-z0-9][A-Za-z0-9-]{0,38}))?\s*$/i);
+            if (unassignMatch) {
+              const assignee = unassignMatch[1] || commenter;
+              if (!isMaintainer && assignee.toLowerCase() !== commenter.toLowerCase()) {
+                core.info(`Ignoring cross-user /unassign from ${association}.`);
+                return;
+              }
+
+              await unassignUser(assignee);
+              return;
+            }
+
+            if (!isMaintainer) {
+              core.info(`Ignoring maintainer-only triage command from ${association}.`);
+              return;
+            }
+
+            const duplicateMatch = body.match(/^\/duplicate\s+#(\d+)\s*$/i);
+            if (duplicateMatch) {
+              const canonicalNumber = Number(duplicateMatch[1]);
+
+              if (canonicalNumber === issueNumber) {
+                core.setFailed("A duplicate target must be different from the current item.");
+                return;
+              }
+
+              if (!(await ensureTargetExists(canonicalNumber))) {
+                return;
+              }
+
+              await addLabels(["status: duplicate"]);
+              await removeLabels([
+                "needs: compliance",
+                "needs: authenticity-review",
+                "needs: duplicate-review",
+                "needs: linked-context",
+                "needs: title",
+                "status: in-progress",
+                "status: needs-triage",
+                "status: needs-author-feedback",
+                "status: stale",
+                "status: superseded",
+              ]);
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: isPullRequest
+                  ? `Closing this pull request as a duplicate of #${canonicalNumber}. Please continue review and discussion there.`
+                  : `Closing this issue as a duplicate of #${canonicalNumber}. Please continue discussion there.`,
+              });
+              await closeCurrent();
+              return;
+            }
+
+            if (/^\/not-duplicate\s*$/i.test(body)) {
+              await removeLabels([
+                "needs: duplicate-review",
+                "status: duplicate",
+              ]);
+              return;
+            }
+
+            if (/^\/authenticity-reviewed\s*$/i.test(body)) {
+              await removeLabel("needs: authenticity-review");
+              return;
+            }
+
+            const supersededMatch = body.match(/^\/superseded-by\s+#(\d+)\s*$/i);
+            if (supersededMatch) {
+              if (!isPullRequest) {
+                core.setFailed("`/superseded-by` can only be used on pull requests.");
+                return;
+              }
+
+              const replacementNumber = Number(supersededMatch[1]);
+
+              if (replacementNumber === issueNumber) {
+                core.setFailed("A superseding pull request must be different from the current pull request.");
+                return;
+              }
+
+              if (!(await ensureTargetExists(replacementNumber))) {
+                return;
+              }
+
+              await addLabels(["status: superseded"]);
+              await removeLabels([
+                "needs: compliance",
+                "needs: authenticity-review",
+                "needs: duplicate-review",
+                "needs: linked-context",
+                "needs: title",
+                "status: in-progress",
+                "status: needs-triage",
+                "status: needs-author-feedback",
+                "status: stale",
+                "status: duplicate",
+              ]);
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: `Closing this pull request as superseded by #${replacementNumber}. Please continue review there.`,
+              });
+              await closeCurrent();
+              return;
+            }
+
+            if (/^\/needs-info\s*$/i.test(body)) {
+              await addLabels(["status: needs-author-feedback"]);
+              await removeLabels([
+                "status: in-progress",
+                "status: needs-triage",
+                "status: duplicate",
+                "status: stale",
+                "status: superseded",
+              ]);
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body: isPullRequest
+                  ? "A maintainer needs more information before this pull request can move forward. Please address the requested context or changes in a follow-up update."
+                  : "A maintainer needs more information before this issue can be triaged. Please add the requested context so it can move forward.",
+              });
+              return;
+            }
+
+            if (/^\/triaged\s*$/i.test(body)) {
+              await removeLabels([
+                "needs: authenticity-review",
+                "needs: duplicate-review",
+                "status: stale",
+                "status: needs-triage",
+                "status: needs-author-feedback",
+              ]);
+              return;
+            }
+
+            core.info("No supported triage command detected.");

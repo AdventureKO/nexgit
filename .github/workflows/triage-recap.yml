@@ -1,0 +1,172 @@
+name: Triage Recap
+
+on:
+  schedule:
+    - cron: '0 17 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post weekly triage recap
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const dashboardTitle = "Maintainer triage recap";
+            const defaultBranch = context.payload.repository.default_branch;
+
+            const queues = [
+              {
+                heading: "Needs triage",
+                query: `repo:${owner}/${repo} is:issue is:open label:"status: needs-triage"`,
+              },
+              {
+                heading: "Duplicate review",
+                query: `repo:${owner}/${repo} is:issue is:open label:"needs: duplicate-review"`,
+              },
+              {
+                heading: "Waiting on author feedback",
+                query: `repo:${owner}/${repo} is:issue is:open label:"status: needs-author-feedback"`,
+              },
+              {
+                heading: "Unassigned open issues",
+                query: `repo:${owner}/${repo} is:issue is:open no:assignee -label:"status: needs-author-feedback" -label:"status: in-progress"`,
+              },
+              {
+                heading: "Open pull requests",
+                query: `repo:${owner}/${repo} is:pr is:open`,
+              },
+            ];
+
+            async function searchQueue(searchQuery) {
+              const result = await github.graphql(
+                `
+                  query TriageQueue($searchQuery: String!) {
+                    search(query: $searchQuery, type: ISSUE, first: 10) {
+                      issueCount
+                      nodes {
+                        ... on Issue {
+                          number
+                          title
+                          url
+                          updatedAt
+                        }
+                        ... on PullRequest {
+                          number
+                          title
+                          url
+                          updatedAt
+                          isDraft
+                        }
+                      }
+                    }
+                  }
+                `,
+                { searchQuery },
+              );
+
+              return result.search;
+            }
+
+            function formatQueue(result) {
+              if (result.issueCount === 0) {
+                return "_None._";
+              }
+
+              const lines = result.nodes.map((node) => {
+                const draft = node.isDraft ? " draft" : "";
+                return `- #${node.number}${draft} ${node.title} (${node.url})`;
+              });
+              const hidden = result.issueCount - result.nodes.length;
+
+              if (hidden > 0) {
+                lines.push(`- ...and ${hidden} more.`);
+              }
+
+              return lines.join("\n");
+            }
+
+            const sections = [];
+            for (const queue of queues) {
+              const result = await searchQueue(queue.query);
+              sections.push([
+                `## ${queue.heading}`,
+                `Count: ${result.issueCount}`,
+                "",
+                formatQueue(result),
+              ].join("\n"));
+            }
+
+            const today = new Date().toISOString().slice(0, 10);
+            const body = [
+              `Weekly triage recap for ${today}.`,
+              "",
+              sections.join("\n\n"),
+              "",
+              `Generated from [${context.workflow}](${context.payload.repository.html_url}/actions/workflows/triage-recap.yml) on \`${defaultBranch}\`.`,
+            ].join("\n");
+
+            const dashboardSearch = await github.graphql(
+              `
+                query DashboardIssue($searchQuery: String!) {
+                  search(query: $searchQuery, type: ISSUE, first: 10) {
+                    nodes {
+                      ... on Issue {
+                        number
+                        title
+                      }
+                    }
+                  }
+                }
+              `,
+              { searchQuery: `repo:${owner}/${repo} is:issue is:open in:title "${dashboardTitle}"` },
+            );
+
+            let dashboard = dashboardSearch.search.nodes.find((node) => node.title === dashboardTitle);
+            if (!dashboard) {
+              try {
+                const created = await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title: dashboardTitle,
+                  body: [
+                    "This issue collects automated weekly triage recaps.",
+                    "",
+                    "Maintainers can close it if the project stops using scheduled recap comments; the next scheduled run will recreate it.",
+                  ].join("\n"),
+                  labels: ["area: automation", "kind: maintenance", "status: in-progress"],
+                });
+                dashboard = created.data;
+              } catch (error) {
+                if (error.status !== 422) {
+                  throw error;
+                }
+
+                const created = await github.rest.issues.create({
+                  owner,
+                  repo,
+                  title: dashboardTitle,
+                  body: [
+                    "This issue collects automated weekly triage recaps.",
+                    "",
+                    "Maintainers can close it if the project stops using scheduled recap comments; the next scheduled run will recreate it.",
+                  ].join("\n"),
+                });
+                dashboard = created.data;
+              }
+            }
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: dashboard.number,
+              body,
+            });

@@ -1,0 +1,303 @@
+name: Issue Claim Deadlines
+
+on:
+  issues:
+    types:
+      - assigned
+      - unassigned
+      - reopened
+  schedule:
+    - cron: '30 16 * * *'
+  workflow_dispatch:
+    inputs:
+      claim_days:
+        description: Days before assigned issues are returned to the unassigned pool.
+        required: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  claim-deadlines:
+    name: Enforce issue claim deadlines
+    runs-on: ubuntu-latest
+    env:
+      CLAIM_DAYS: ${{ github.event.inputs.claim_days || vars.ISSUE_CLAIM_DAYS || '14' }}
+    steps:
+      - name: Track and expire assigned issue claims
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const claimDays = Number.parseInt(process.env.CLAIM_DAYS || "14", 10);
+            if (!Number.isFinite(claimDays) || claimDays < 1 || claimDays > 90) {
+              core.setFailed("CLAIM_DAYS must be a number between 1 and 90.");
+              return;
+            }
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const marker = "<!-- nexgit-assignment-deadlines -->";
+            const statePattern = /<!-- nexgit-assignment-deadlines-state\n([\s\S]*?)\n-->/m;
+            const millisecondsPerDay = 24 * 60 * 60 * 1000;
+
+            function dateOnly(date) {
+              return date.toISOString().slice(0, 10);
+            }
+
+            function today() {
+              return dateOnly(new Date());
+            }
+
+            function deadlineFromNow() {
+              return dateOnly(new Date(Date.now() + claimDays * millisecondsPerDay));
+            }
+
+            function labelNames(issue) {
+              return (issue.labels || []).map((label) =>
+                typeof label === "string" ? label : label.name,
+              );
+            }
+
+            function parseState(commentBody) {
+              const match = (commentBody || "").match(statePattern);
+              if (!match) {
+                return { version: 1, claimDays, assignees: {} };
+              }
+
+              try {
+                const parsed = JSON.parse(match[1]);
+                return {
+                  version: 1,
+                  claimDays: parsed.claimDays || claimDays,
+                  assignees: parsed.assignees || {},
+                };
+              } catch (error) {
+                core.warning(`Could not parse issue claim deadline state: ${error.message}`);
+                return { version: 1, claimDays, assignees: {} };
+              }
+            }
+
+            function syncStateToAssignees(state, assignees) {
+              const activeLogins = new Set(assignees.map((assignee) => assignee.login));
+              for (const login of Object.keys(state.assignees)) {
+                if (!activeLogins.has(login)) {
+                  delete state.assignees[login];
+                }
+              }
+
+              for (const assignee of assignees) {
+                if (!state.assignees[assignee.login]) {
+                  state.assignees[assignee.login] = {
+                    assignedAt: today(),
+                    due: deadlineFromNow(),
+                  };
+                }
+              }
+
+              state.claimDays = claimDays;
+              return state;
+            }
+
+            function formatDeadlineComment(state) {
+              const entries = Object.entries(state.assignees).sort(([left], [right]) =>
+                left.localeCompare(right),
+              );
+              const stateJson = JSON.stringify(state, null, 2);
+              const rows = entries
+                .map(([login, deadline]) => `| @${login} | ${deadline.due} |`)
+                .join("\n");
+              const table = rows
+                ? ["| Assignee | Due date |", "| --- | --- |", rows].join("\n")
+                : "No active issue claim is currently tracked.";
+
+              return [
+                marker,
+                `<!-- nexgit-assignment-deadlines-state\n${stateJson}\n-->`,
+                "### Issue claim deadline",
+                "",
+                `Assigned issues have a ${claimDays}-day claim window so early project work keeps moving.`,
+                "",
+                table,
+                "",
+                "If the due date passes, automation returns the issue to the unassigned pool. If you need more time, leave a progress update before the deadline so a maintainer can decide whether to extend the claim.",
+              ].join("\n");
+            }
+
+            async function listComments(issueNumber) {
+              return await github.paginate(github.rest.issues.listComments, {
+                owner,
+                repo,
+                issue_number: issueNumber,
+                per_page: 100,
+              });
+            }
+
+            async function getDeadlineComment(issueNumber) {
+              const comments = await listComments(issueNumber);
+              return comments.find((comment) => (comment.body || "").includes(marker));
+            }
+
+            async function upsertDeadlineComment(issueNumber, existingComment, state) {
+              const body = formatDeadlineComment(state);
+              if (existingComment) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existingComment.id,
+                  body,
+                });
+                return;
+              }
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
+            }
+
+            async function addLabels(issueNumber, labels) {
+              if (labels.length === 0) {
+                return;
+              }
+
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                labels,
+              });
+            }
+
+            async function removeLabel(issueNumber, label) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issueNumber,
+                  name: label,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
+            async function removeLabels(issueNumber, labels) {
+              for (const label of labels) {
+                await removeLabel(issueNumber, label);
+              }
+            }
+
+            async function markClaimed(issue) {
+              await addLabels(issue.number, ["status: in-progress"]);
+              await removeLabels(issue.number, [
+                "help wanted",
+                "status: needs-author-feedback",
+                "status: needs-triage",
+                "status: stale",
+              ]);
+            }
+
+            async function markAvailableIfUnassigned(issue, remainingAssignees) {
+              if (remainingAssignees.length > 0) {
+                return;
+              }
+
+              const labelsToAdd = ["status: needs-triage"];
+              const isMaintainerOnly = labelNames(issue).some(
+                (label) => label.toLowerCase() === "maintainer only",
+              );
+              if (!isMaintainerOnly) {
+                labelsToAdd.push("help wanted");
+              }
+
+              await addLabels(issue.number, labelsToAdd);
+              await removeLabels(issue.number, ["status: in-progress", "status: stale"]);
+            }
+
+            async function trackIssue(issue) {
+              if (issue.pull_request || issue.state !== "open") {
+                return;
+              }
+
+              const deadlineComment = await getDeadlineComment(issue.number);
+              const state = syncStateToAssignees(
+                parseState(deadlineComment?.body),
+                issue.assignees || [],
+              );
+
+              await upsertDeadlineComment(issue.number, deadlineComment, state);
+
+              if ((issue.assignees || []).length > 0) {
+                await markClaimed(issue);
+              } else {
+                await markAvailableIfUnassigned(issue, []);
+              }
+            }
+
+            async function expireIssue(issue) {
+              if (issue.pull_request || issue.state !== "open" || (issue.assignees || []).length === 0) {
+                return;
+              }
+
+              const deadlineComment = await getDeadlineComment(issue.number);
+              const state = syncStateToAssignees(
+                parseState(deadlineComment?.body),
+                issue.assignees || [],
+              );
+              const todayDate = today();
+              const overdueAssignees = (issue.assignees || [])
+                .map((assignee) => assignee.login)
+                .filter((login) => state.assignees[login]?.due <= todayDate);
+
+              if (overdueAssignees.length === 0) {
+                await upsertDeadlineComment(issue.number, deadlineComment, state);
+                return;
+              }
+
+              await github.rest.issues.removeAssignees({
+                owner,
+                repo,
+                issue_number: issue.number,
+                assignees: overdueAssignees,
+              });
+
+              for (const login of overdueAssignees) {
+                delete state.assignees[login];
+              }
+
+              const remainingAssignees = (issue.assignees || [])
+                .map((assignee) => assignee.login)
+                .filter((login) => !overdueAssignees.includes(login));
+              await markAvailableIfUnassigned(issue, remainingAssignees);
+              await upsertDeadlineComment(issue.number, deadlineComment, state);
+
+              const mentions = overdueAssignees.map((login) => `@${login}`).join(", ");
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issue.number,
+                body: `${mentions} ${overdueAssignees.length === 1 ? "was" : "were"} unassigned because the ${claimDays}-day claim deadline passed. This issue is available for another contributor to claim.`,
+              });
+            }
+
+            if (context.eventName === "issues") {
+              const issue = context.payload.issue;
+              await trackIssue(issue);
+              return;
+            }
+
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              owner,
+              repo,
+              state: "open",
+              per_page: 100,
+            });
+
+            for (const issue of issues) {
+              await expireIssue(issue);
+            }

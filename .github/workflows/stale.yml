@@ -1,0 +1,46 @@
+name: Stale
+
+on:
+  schedule:
+    - cron: '0 16 * * 1'
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  inactivity:
+    name: Inactivity cleanup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          stale-issue-message: 'This issue has been quiet for a while. If it is still relevant, add context and it will stay open.'
+          stale-pr-message: 'This pull request has been quiet for a while. If work is still active, leave a note and it will stay open.'
+          close-issue-message: 'Closing due to prolonged inactivity. It can be reopened with fresh context.'
+          close-pr-message: 'Closing due to prolonged inactivity. It can be reopened when the work is ready to continue.'
+          days-before-issue-stale: 30
+          days-before-issue-close: 7
+          days-before-pr-stale: 45
+          days-before-pr-close: 15
+          stale-issue-label: 'status: stale'
+          stale-pr-label: 'status: stale'
+          exempt-issue-labels: 'kind: feature,status: needs-author-feedback,status: duplicate'
+          exempt-pr-labels: 'status: superseded'
+
+  author-feedback:
+    name: Author feedback timeout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          only-issue-labels: 'status: needs-author-feedback'
+          stale-issue-message: 'This issue is waiting on author feedback. If the requested context is not added, it will be closed after the follow-up window.'
+          close-issue-message: 'Closing because the requested author feedback was not provided. It can be reopened with the missing context.'
+          days-before-issue-stale: 14
+          days-before-issue-close: 16
+          days-before-pr-stale: -1
+          days-before-pr-close: -1
+          stale-issue-label: 'status: stale'
+          stale-pr-label: 'status: stale'

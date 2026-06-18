@@ -1,0 +1,310 @@
+name: Issue Intake
+
+on:
+  issues:
+    types:
+      - opened
+      - edited
+      - reopened
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  intake:
+    if: ${{ github.event.issue.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check issue compliance, route triage, and suggest duplicates
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const marker = "<!-- codelab-template-issue-intake -->";
+            const areaLabels = [
+              "area: automation",
+              "area: cli",
+              "area: core",
+              "area: desktop",
+              "area: design",
+              "area: docs",
+              "area: protocol",
+              "area: tests",
+              "area: tui",
+            ];
+            const areaMap = new Map([
+              ["automation", "area: automation"],
+              ["cli", "area: cli"],
+              ["core", "area: core"],
+              ["desktop", "area: desktop"],
+              ["design", "area: design"],
+              ["docs", "area: docs"],
+              ["protocol", "area: protocol"],
+              ["tests", "area: tests"],
+              ["tui", "area: tui"],
+            ]);
+            const normalizeWhitespace = (value) => value.replace(/\s+/g, " ").trim();
+            const stopWords = new Set([
+              "about", "after", "before", "because", "feature", "issue", "pull",
+              "request", "project", "task", "there", "their", "would", "could",
+              "should", "today", "workflow", "report", "problem", "proposal",
+              "summary", "environment", "this", "that", "with", "from",
+            ]);
+
+            const templates = [
+              {
+                prefix: "[bug]",
+                name: "bug report",
+                sections: [
+                  { heading: "Area" },
+                  { heading: "Summary", placeholders: ["the project should..."] },
+                  { heading: "Reproduction", placeholders: ["1. open ...", "2. run ...", "3. observe ..."] },
+                  { heading: "Environment", placeholders: ["macos 15, node 22, pnpm 10"] },
+                ],
+              },
+              {
+                prefix: "[feature]",
+                name: "feature request",
+                sections: [
+                  { heading: "Area" },
+                  { heading: "Problem", placeholders: ["today the workflow is painful because..."] },
+                  { heading: "Proposal", placeholders: ["the project should let users..."] },
+                ],
+              },
+              {
+                prefix: "[task]",
+                name: "project task",
+                sections: [
+                  { heading: "Area" },
+                  { heading: "Goal", placeholders: ["what should this task accomplish?"] },
+                  { heading: "Definition of done", placeholders: ["how will maintainers know this task is complete?"] },
+                  { heading: "Verification", placeholders: ["what command, manual check, screenshot, or acceptance criteria proves this task worked?"] },
+                ],
+              },
+            ];
+
+            function escapeRegExp(value) {
+              return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            }
+
+            function extractSection(body, heading) {
+              const pattern = new RegExp(`### ${escapeRegExp(heading)}\\s*\\n([\\s\\S]*?)(?=\\n### |$)`, "i");
+              const match = body.match(pattern);
+              return match ? match[1].trim() : "";
+            }
+
+            function hasMeaningfulContent(value, placeholders = []) {
+              if (!value) {
+                return false;
+              }
+
+              const normalized = normalizeWhitespace(value.toLowerCase());
+              const compact = normalized.replace(/[`*_>#.\-\d\s]/g, "");
+              if (!compact || compact.length < 6) {
+                return false;
+              }
+
+              if (["no response", "n/a", "none", "todo", "tbd"].includes(normalized)) {
+                return false;
+              }
+
+              return !placeholders.some((placeholder) => normalized === normalizeWhitespace(placeholder.toLowerCase()));
+            }
+
+            function tokenize(value) {
+              return [...new Set(
+                (value.toLowerCase().match(/[a-z0-9]{4,}/g) || [])
+                  .filter((token) => !stopWords.has(token))
+              )];
+            }
+
+            function scoreCandidate(seedTokens, candidate) {
+              const candidateTokens = tokenize(`${candidate.title} ${candidate.body || ""}`);
+              const overlap = seedTokens.filter((token) => candidateTokens.includes(token));
+              const normalizedSeedTitle = normalizeWhitespace(issue.title.toLowerCase());
+              const normalizedCandidateTitle = normalizeWhitespace(candidate.title.toLowerCase());
+              const exactishTitle = normalizedSeedTitle.includes(normalizedCandidateTitle) || normalizedCandidateTitle.includes(normalizedSeedTitle);
+              return overlap.length + (exactishTitle ? 3 : 0);
+            }
+
+            async function ensureLabel(name, present) {
+              if (present) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: [name],
+                });
+                return;
+              }
+
+              try {
+                await github.rest.issues.removeLabel({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  name,
+                });
+              } catch (error) {
+                if (error.status !== 404) {
+                  throw error;
+                }
+              }
+            }
+
+            async function ensureAreaLabel(selectedLabel) {
+              for (const label of areaLabels) {
+                if (label === selectedLabel) {
+                  continue;
+                }
+
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: issue.number,
+                    name: label,
+                  });
+                } catch (error) {
+                  if (error.status !== 404) {
+                    throw error;
+                  }
+                }
+              }
+
+              if (selectedLabel) {
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  labels: [selectedLabel],
+                });
+              }
+            }
+
+            const template = templates.find((entry) => issue.title.toLowerCase().startsWith(entry.prefix));
+            const complianceProblems = [];
+            let selectedAreaLabel = null;
+
+            if (!template) {
+              complianceProblems.push("The issue title should start with `[bug]`, `[feature]`, or `[task]` so it matches one of the checked-in issue forms.");
+            } else {
+              for (const section of template.sections) {
+                if (section.heading === "Area") {
+                  continue;
+                }
+
+                const value = extractSection(issue.body || "", section.heading);
+                if (!hasMeaningfulContent(value, section.placeholders)) {
+                  complianceProblems.push(`\`${section.heading}\` is empty or still contains placeholder text for the ${template.name} form.`);
+                }
+              }
+
+              const areaValue = extractSection(issue.body || "", "Area");
+              selectedAreaLabel = areaMap.get((areaValue || "").toLowerCase()) || null;
+              if (!selectedAreaLabel) {
+                complianceProblems.push("`Area` must be one of Automation, CLI, Core, Desktop, Design, Docs, Protocol, Tests, or TUI so triage automation can route the issue.");
+              }
+            }
+
+            const seedTokens = tokenize(issue.title).slice(0, 6);
+            let duplicateCandidates = [];
+
+            if (seedTokens.length >= 2) {
+              const searchQuery = `repo:${owner}/${repo} ${seedTokens.map((token) => `"${token}"`).join(" ")}`;
+              try {
+                const result = await github.graphql(
+                  `
+                    query SearchIssues($searchQuery: String!) {
+                      search(query: $searchQuery, type: ISSUE, first: 10) {
+                        nodes {
+                          ... on Issue {
+                            number
+                            title
+                            state
+                            url
+                            body
+                          }
+                          ... on PullRequest {
+                            number
+                            title
+                            state
+                            url
+                            body
+                          }
+                        }
+                      }
+                    }
+                  `,
+                  { searchQuery },
+                );
+
+                duplicateCandidates = result.search.nodes
+                  .filter((candidate) => candidate.number !== issue.number)
+                  .map((candidate) => ({ ...candidate, score: scoreCandidate(seedTokens, candidate) }))
+                  .filter((candidate) => candidate.score >= 3)
+                  .sort((left, right) => right.score - left.score)
+                  .slice(0, 3);
+              } catch (error) {
+                core.warning(`Could not search for duplicate issues: ${error.message}`);
+              }
+            }
+
+            const sections = [];
+            if (complianceProblems.length > 0) {
+              sections.push([
+                "This issue needs a small update before triage:",
+                complianceProblems.map((problem) => `- ${problem}`).join("\n"),
+                "Please edit the issue instead of opening a new one.",
+              ].join("\n\n"));
+            }
+
+            if (duplicateCandidates.length > 0) {
+              sections.push([
+                "Potentially related existing work:",
+                duplicateCandidates
+                  .map((candidate) => `- #${candidate.number} ${candidate.title} (${candidate.state.toLowerCase()})`)
+                  .join("\n"),
+                "If one of these is the canonical thread, comment there and a maintainer can close this issue with `/duplicate #123`; otherwise a maintainer can clear the review with `/not-duplicate`.",
+              ].join("\n\n"));
+            }
+
+            const body = sections.length > 0 ? `${marker}\n\n${sections.join("\n\n---\n\n")}` : null;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: issue.number,
+            });
+            const existing = comments.find((comment) => comment.user.type === "Bot" && comment.body.includes(marker));
+
+            if (body) {
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+              } else {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: issue.number,
+                  body,
+                });
+              }
+            } else if (existing) {
+              await github.rest.issues.deleteComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+              });
+            }
+
+            await ensureLabel("needs: compliance", complianceProblems.length > 0);
+            await ensureLabel("needs: duplicate-review", duplicateCandidates.length > 0);
+            await ensureAreaLabel(selectedAreaLabel);
